@@ -104,7 +104,7 @@ void SessionID::from_string(const f8String& from)
 //-------------------------------------------------------------------------------------------------
 Session::Session(const F8MetaCntx& ctx, const SessionID& sid, Persister *persist, Logger *logger, Logger *plogger) :
 _state(States::st_none),
-_ctx(ctx), _connection(), _req_next_send_seq(), _req_next_receive_seq(),
+_ctx(ctx), _connection(), _req_next_send_seq(), _req_next_receive_seq(), _hb_count_since_resend(),
 	_sid(sid), _sf(), _persist(persist), _logger(logger), _plogger(plogger),	// initiator
 	_timer(*this, 10), _hb_processor(&Session::heartbeat_service, true),
 	_session_scheduler(&Session::activation_service, true), _schedule()
@@ -131,7 +131,7 @@ _ctx(ctx), _connection(), _req_next_send_seq(), _req_next_receive_seq(),
 //-------------------------------------------------------------------------------------------------
 Session::Session(const F8MetaCntx& ctx, const sender_comp_id& sci, Persister *persist, Logger *logger, Logger *plogger) :
 _state(States::st_none),
-_ctx(ctx), _sci(sci), _connection(), _req_next_send_seq(), _req_next_receive_seq(),
+_ctx(ctx), _sci(sci), _connection(), _req_next_send_seq(), _req_next_receive_seq(), _hb_count_since_resend(),
 	_sf(), _persist(persist), _logger(logger), _plogger(plogger),	// acceptor
 	_timer(*this, 10), _hb_processor(&Session::heartbeat_service, true),
 	_session_scheduler(&Session::activation_service, true), _schedule()
@@ -145,6 +145,7 @@ void Session::atomic_init(States::SessionStates st)
 {
 	do_state_change(st);
 	_next_send_seq = _next_receive_seq = 1;
+	_hb_count_since_resend = 0;
 	_active = true;
 }
 
@@ -227,7 +228,7 @@ int Session::start(Connection *connection, bool wait, const unsigned send_seqnum
 }
 
 //-------------------------------------------------------------------------------------------------
-void Session::stop(const bool clearTimer)
+void Session::stop()
 {
 	if (_control & shutdown)
 		return;
@@ -235,9 +236,8 @@ void Session::stop(const bool clearTimer)
 
 	if (_connection)
 	{
-        if (_connection->get_role() == Connection::cn_initiator &&
-                clearTimer)
-            _timer.clear();
+		if (_connection->get_role() == Connection::cn_initiator)
+			_timer.clear();
 		else
 		{
 			f8_scoped_spin_lock guard(_per_spl, _connection->get_pmodel() == pm_coro);
@@ -642,18 +642,25 @@ bool Session::handle_logout(const unsigned seqnum, const Message *msg)
 //-------------------------------------------------------------------------------------------------
 bool Session::handle_sequence_reset(const unsigned seqnum, const Message *msg)
 {
-	enforce(seqnum, msg);
-
 	new_seq_num nsn;
-	if (msg->get(nsn))
+	msg->get(nsn);
+	
+	slout_debug << "newseqnum = " << nsn() << ", _next_receive_seq = " << static_cast<unsigned>(_next_receive_seq) << " seqnum:" << seqnum;
+	if (nsn() >= static_cast<unsigned>(_next_receive_seq))
+		_next_receive_seq = nsn() - 1;
+	else
 	{
-		slout_debug << "newseqnum = " << nsn() << ", _next_receive_seq = " << _next_receive_seq << " seqnum:" << seqnum;
-		if (nsn() >= static_cast<int>(_next_receive_seq))
-			_next_receive_seq = nsn() - 1;
-		else if (nsn() < static_cast<int>(_next_receive_seq))
-			throw MsgSequenceTooLow(nsn(), _next_receive_seq);
-	}
+		gap_fill_flag gff;
+		msg->get(gff);
 
+		if (!gff()) {
+			ostringstream errstr;
+			errstr << "Message Sequence too low, received" << nsn() << " expected " << static_cast<unsigned>(_next_receive_seq);
+			slout_warn << errstr.str();
+			return send(generate_reject(seqnum, errstr.str().c_str(), msg->get_msgtype().c_str()));
+		}
+	}
+	
 	if (_state == States::st_resend_request_sent)
 		do_state_change(States::st_continuous);
 
@@ -693,7 +700,44 @@ bool Session::handle_resend_request(const unsigned seqnum, const Message *msg)
 			//cout << "got resend request:" << begin() << " to " << end() << endl;
 			do_state_change(States::st_resend_request_received);
 			//f8_scoped_spin_lock guard(_per_spl, _connection->get_pmodel() == pm_coro); // no no nanette!
-			_persist->get(begin(), end(), *this, &Session::retrans_callback);
+
+			map<unsigned, f8String> dict;
+			unsigned num_found = 0;
+			
+			{
+				// lock and pull all the messages local
+				f8_scoped_spin_lock guard(_per_spl);
+				num_found = _persist->get(begin(), end(), dict);
+			}
+
+			unsigned start(begin()), stop(end()), next_expected_seqnum(begin()), last_resend_seqnum(0);
+			if (stop == 0) // all messages
+				stop = _next_send_seq - 1;
+
+			bool has_gap(false);
+			for (unsigned i = start; i <= stop; i++) {
+				auto item = dict.find(i);
+				if (item == dict.end()) {
+					has_gap = true;
+					continue;
+				}
+				
+				if (has_gap) {
+					send(generate_sequence_reset(i, true), true, next_expected_seqnum, true);
+					has_gap = false;
+				}
+
+				Message *msg(Message::factory(_ctx, item->second));
+				send(msg);
+				last_resend_seqnum = item->first;
+				next_expected_seqnum = i + 1;
+			}
+
+			if (last_resend_seqnum < _next_send_seq)
+				send(generate_sequence_reset(_next_send_seq, true), true, next_expected_seqnum, true);
+
+			if (_state == States::st_resend_request_received)
+				do_state_change(States::st_continuous);
 		}
 	}
 	else
@@ -817,40 +861,23 @@ bool Session::heartbeat_service()
 		Tickval now(true);
 		if ((now - _last_sent).secs() >= static_cast<time_t>(_connection->get_hb_interval()))
 		{
-			const f8String testReqID;
-			send(generate_heartbeat(testReqID));
+			if (_state != States::st_test_request_sent)
+			{
+				const f8String testReqID;
+				send(generate_heartbeat(testReqID));
+			}
 		}
 
 		now.now();
 		if ((now - _last_received).secs() > static_cast<time_t>(_connection->get_hb_interval20pc()))
 		{
-			if (_state == States::st_test_request_sent)	// already sent
+			if (_state != States::st_session_terminated)
 			{
-				ostringstream ostr;
-				ostr << "Remote has ignored my test request. Aborting session...";
-				send(generate_logout(_loginParameters._silent_disconnect ? 0 : ostr.str().c_str()), true, 0, true); // so it won't increment
-				do_state_change(States::st_logoff_sent);
-				log(ostr.str(), Logger::Error);
-				try
+				if (_state == States::st_test_request_sent && (now - _last_sent).secs() <= static_cast<time_t>(_connection->get_hb_interval()))
 				{
-                    //  do not clear the timer, as the lock required for the same is already taken by the timer thread
-                    //  not removing the remaining events will cause some extra work to be done,
-                    //  but that work will be limited by the fact that the work checks if the session is already shutdown
-                    //  activation_service and heartbeat_service both have shutdown checks
-                    stop(false);
+					return true;
 				}
-				catch (Poco::Net::NetException& e)
-				{
-					slout_error << e.what();
-				}
-				catch (exception& e)
-				{
-					slout_error << e.what();
-				}
-				return true;
-			}
-			else if (_state != States::st_session_terminated)
-			{
+
 				ostringstream ostr;
 				ostr << "Have not received anything from remote for ";
 				if (_last_received.secs())
@@ -876,6 +903,7 @@ bool Session::handle_heartbeat(const unsigned seqnum, const Message *msg)
 
 	if (_state == States::st_test_request_sent)
 		do_state_change(States::st_continuous);
+	++_hb_count_since_resend;
 	return true;
 }
 

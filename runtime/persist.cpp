@@ -361,6 +361,12 @@ unsigned MemoryPersister::get(const unsigned from, const unsigned to, Session& s
 }
 
 //-------------------------------------------------------------------------------------------------
+unsigned MemoryPersister::get(const unsigned from, const unsigned to, map<unsigned, f8String> &dict) const
+{
+	return 0;
+}
+
+//-------------------------------------------------------------------------------------------------
 bool MemoryPersister::put(const unsigned sender_seqnum, const unsigned target_seqnum)
 {
 	const unsigned arr[2] { sender_seqnum, target_seqnum };

@@ -226,6 +226,53 @@ unsigned FilePersister::get(const unsigned from, const unsigned to, Session& ses
 }
 
 //-------------------------------------------------------------------------------------------------
+unsigned FilePersister::get(const unsigned from, const unsigned to, map<unsigned, f8String> &dict) const
+{
+	unsigned last_seq(0);
+	get_last_seqnum(last_seq);
+	unsigned recs_found(0), startSeqNum(find_nearest_highest_seqnum(from, last_seq));
+	const unsigned finish(to == 0 ? last_seq : to);
+
+	if (!startSeqNum || from > finish)
+	{
+		glout_info << "No records found";
+		return 0;
+	}
+
+	Index::const_iterator itr(_index.find(startSeqNum));
+	if (itr != _index.end())
+	{
+		char buff[FIX8_MAX_MSG_LENGTH];
+
+		do
+		{
+			if (!itr->first || itr->first > finish)
+				break;
+			if (lseek(_fod, itr->second._offset, SEEK_SET) < 0)
+			{
+				glout_error << "Error: could not seek to correct index location for get: " << _dbFname;
+				break;
+			}
+
+			if (read(_fod, buff, itr->second._size) != itr->second._size)
+			{
+				glout_error << "Error: could not read message record for seqnum " << itr->first << " from: " << _dbFname;
+				break;
+			}
+
+			++recs_found;
+			dict[itr->first] = f8String(buff, itr->second._size);
+		} while (++itr != _index.end());
+	}
+	else
+	{
+		glout_error << "record not found (" << startSeqNum << ')';
+	}
+
+	return recs_found;
+}
+
+//-------------------------------------------------------------------------------------------------
 bool FilePersister::put(const unsigned sender_seqnum, const unsigned target_seqnum)
 {
 	if (!_opened)

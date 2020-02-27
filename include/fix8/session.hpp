@@ -404,7 +404,7 @@ public:
 
 protected:
 	Control _control;
-	f8_atomic<unsigned> _next_send_seq, _next_receive_seq;
+	f8_atomic<unsigned> _next_send_seq, _next_receive_seq, _hb_count_since_resend;
 	f8_atomic<States::SessionStates> _state;
 	f8_atomic<bool> _active;
 	Tickval _last_sent, _last_received;
@@ -657,9 +657,8 @@ public:
 	/// Force persister to sync next send/receive seqnums
 	F8API void update_persist_seqnums();
 
-    /*! stop the session.
-      \param clearTimer - false if timer event queue clearing is to be omitted */
-    F8API void stop(const bool clearTimer = true);
+	/// stop the session.
+	F8API void stop();
 
 	/*! Get the connection object.
 	    \return the connection object */
@@ -829,12 +828,21 @@ public:
 	{
 		const States::SessionStates old_state(_state.exchange(new_state));
 		if (old_state != new_state)
+		{
+			if (new_state == States::st_resend_request_received || new_state == States::st_resend_request_received)
+				_hb_count_since_resend = 0;
 			state_change(old_state, new_state);
+		}
+			
 	}
 
 	/*! Get the current session state enumeration
 	    \return States::SessionStates value */
 	States::SessionStates get_session_state() const { return _state; }
+
+	/*! Get the number of heartbeats since last resend
+		\return unsigned */
+	unsigned get_heartbeats_counter() const { return _hb_count_since_resend; }
 
 	/*! Detach message passed to handle_application. Will set source to 0;
 	    Not thread safe and should never be called across threads. It should

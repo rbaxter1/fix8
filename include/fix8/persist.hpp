@@ -117,6 +117,13 @@ public:
 	virtual unsigned get(const unsigned from, const unsigned to, Session& session,
 		bool (Session::*callback)(const Session::SequencePair& with, Session::RetransmissionContext& rctx)) const = 0;
 
+	/*! Retrieve a range of persisted messages.
+	\param from start at sequence number
+	\param to end sequence number
+	\param dict map of messages by sequence number
+	\return number of messages retrieved */
+	virtual unsigned get(const unsigned from, const unsigned to, std::map<unsigned, f8String> &dict) const = 0;
+
 	/*! Retrieve sequence number of last peristed message.
 	    \param to target sequence number
 	    \return sequence number of last peristed message on success */
@@ -327,6 +334,13 @@ public:
 	F8API virtual unsigned get(const unsigned from, const unsigned to, Session& session,
 		bool (Session::*)(const Session::SequencePair& with, Session::RetransmissionContext& rctx)) const;
 
+	/*! Retrieve a range of persisted messages.
+	\param from start at sequence number
+	\param to end sequence number
+	\param dict map of messages by sequence number
+	\return number of messages retrieved */
+	F8API virtual unsigned get(const unsigned from, const unsigned to, std::map<unsigned, f8String> &dict) const;
+
 	/*! Retrieve sequence number of last peristed message.
 	    \param to target sequence number
 	    \return sequence number of last peristed message on success */
@@ -438,6 +452,13 @@ public:
 	    \return number of messages retrieved */
 	F8API virtual unsigned get(const unsigned from, const unsigned to, Session& session,
 		bool (Session::*)(const Session::SequencePair& with, Session::RetransmissionContext& rctx)) const;
+
+	/*! Retrieve a range of persisted messages.
+	\param from start at sequence number
+	\param to end sequence number
+	\param dict map of messages by sequence number
+	\return number of messages retrieved */
+	F8API virtual unsigned get(const unsigned from, const unsigned to, std::map<unsigned, f8String> &dict) const;
 
 	/*! Retrieve sequence number of last peristed message.
 	    \param to target sequence number

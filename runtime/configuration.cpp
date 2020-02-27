@@ -268,7 +268,7 @@ Logger *Configuration::create_logger(const XmlElement *from, const Logtype ltype
 				&& ((type % "session" && ltype == session_log) || (type % "protocol" && ltype == protocol_log)))
 			{
 				string logname("logname_not_set.log"), levstr, delim(" ");
-				which->FindAttrRef("filename", logname);
+				which->GetAttr("filename", logname);
 				trim(logname);
 				if (which->GetAttr("delimiter", delim) && delim.size() > 2) // "|" or "<>" or "{}" etc
 					throw ConfigurationError("invalid logging field delimiter");
@@ -395,10 +395,10 @@ SslContext Configuration::get_ssl_context(const XmlElement *from) const
 	const XmlElement *which;
 	if (from_or_default(from, "ssl_context", name) && (which = find_group(g_ssl_context, name)))
 	{
-		static std::string empty, cipher("ALL:!ADH:!LOW:!EXP:!MD5:@STRENGTH"), relaxed("relaxed");
-		target._private_key_file = which->FindAttrRef("private_key_file", empty);
-		target._certificate_file = which->FindAttrRef("certificate_file", empty);
-		target._ca_location = which->FindAttrRef("ca_location", empty);
+		static std::string cipher("ALL:!ADH:!LOW:!EXP:!MD5:@STRENGTH"), relaxed("relaxed");
+		which->GetAttr("private_key_file", target._private_key_file);
+		which->GetAttr("certificate_file", target._certificate_file);
+		which->GetAttr("ca_location", target._ca_location);
 		target._verification_depth = which->FindAttr("verification_depth", static_cast<int>(defaults::verification_depth));
 		target._load_default_cas = which->FindAttr("load_default_cas", false);
 		target._cipher_list = which->FindAttrRef("cipher_list", cipher);
